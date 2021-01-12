@@ -119,8 +119,7 @@ def cvx_fit(data: np.array,
     # and imaginary parts of rho seperately: rho = rho_r + 1j * rho_i
 
     dim = int(np.sqrt(basis_matrix.shape[1]))
-    rho_r = cvxpy.Variable((dim, dim), symmetric=True)
-    rho_i = cvxpy.Variable((dim, dim))
+    rho = cvxpy.Variable((dim, dim), psd=True)
 
     # CONSTRAINTS
 
