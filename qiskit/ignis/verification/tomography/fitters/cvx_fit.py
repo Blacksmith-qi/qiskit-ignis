@@ -167,7 +167,7 @@ def cvx_fit(data: np.array,
     # Settings for the fitting
     max_iters = 50000
     iters = 1000
-    atol = 1e-8
+    atol = 1e-6
 
     # Set default solver if none is specified
     if 'solver' not in kwargs:
