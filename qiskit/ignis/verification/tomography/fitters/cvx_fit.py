@@ -115,47 +115,28 @@ def cvx_fit(data: np.array,
                           "cvxpy' or use a `lstsq` fitter instead of cvx_fit.")
     # SDP VARIABLES
 
-    # Since CVXPY only works with real variables we must specify the real
-    # and imaginary parts of rho seperately: rho = rho_r + 1j * rho_i
+    # Defining the Variable to search. Attribute hermitian tells automatically
+    # that rho is complex
 
     dim = int(np.sqrt(basis_matrix.shape[1]))
-    rho = cvxpy.Variable((dim, dim), psd=True)
+    rho = cvxpy.Variable(shape=(dim, dim), hermitian=True)
 
     # CONSTRAINTS
 
-    # The constraint that rho is Hermitian (rho.H = rho)
-    # transforms to the two constraints
-    #   1. rho_r.T = rho_r.T  (real part is symmetric)
-    #   2. rho_i.T = -rho_i.T  (imaginary part is anti-symmetric)
-
-    cons = [rho_i == -rho_i.T]
+    cons = []
 
     # Trace constraint: note this should not be used at the same
     # time as the trace preserving constraint.
 
     if trace is not None:
-        cons.append(cvxpy.trace(rho_r) == trace)
+        cons.append(cvxpy.trace(rho) == trace)
 
-    # Since we can only work with real matrices in CVXPY we can specify
-    # a complex PSD constraint as
-    #   rho >> 0 iff [[rho_r, -rho_i], [rho_i, rho_r]] >> 0
+    # Specifying the we want psd
 
     if psd is True:
-        rho = cvxpy.bmat([[rho_r, -rho_i], [rho_i, rho_r]])
         cons.append(rho >> 0)
 
-    # Trace preserving constraint when fitting Choi-matrices for
-    # quantum process tomography. Note that this adds an implicity
-    # trace constraint of trace(rho) = sqrt(len(rho)) = dim
-    # if a different trace constraint is specified above this will
-    # cause the fitter to fail.
-
-    if trace_preserving is True:
-        sdim = int(np.sqrt(dim))
-        ptr = partial_trace_super(sdim, sdim)
-        cons.append(ptr @ cvxpy.vec(rho_r) == np.identity(sdim).ravel())
-        cons.append(ptr @ cvxpy.vec(rho_i) == np.zeros(sdim*sdim))
-
+    # Not sure if needed but doesnt hurt in general
     # Rescale input data and matrix by weights if they are provided
     if weights is not None:
         w = np.array(weights)
@@ -167,32 +148,27 @@ def cvx_fit(data: np.array,
 
     # The function we wish to minimize is || arg ||_2 where
     #   arg =  bm * vec(rho) - data
-    # Since we are working with real matrices in CVXPY we expand this as
-    #   bm * vec(rho) = (bm_r + 1j * bm_i) * vec(rho_r + 1j * rho_i)
-    #                 = bm_r * vec(rho_r) - bm_i * vec(rho_i)
-    #                   + 1j * (bm_r * vec(rho_i) + bm_i * vec(rho_r))
-    #                 = bm_r * vec(rho_r) - bm_i * vec(rho_i)
-    # where we drop the imaginary part since the expectation value is real
 
-    bm_r = np.real(basis_matrix)
-    bm_i = np.imag(basis_matrix)
-
+    # Not used for my examples
     # CVXPY doesn't seem to handle sparse matrices very well so we convert
     # sparse matrices to Numpy arrays.
 
-    if isinstance(basis_matrix, sps.spmatrix):
-        bm_r = bm_r.todense()
-        bm_i = bm_i.todense()
+    # if isinstance(basis_matrix, sps.spmatrix):
+    #     bm_r = bm_r.todense()
+    #     bm_i = bm_i.todense()
 
-    arg = bm_r @ cvxpy.vec(rho_r) - bm_i @ cvxpy.vec(rho_i) - np.array(data)
+    arg = basis_matrix @ cvxpy.vec(rho) - np.array(data)
 
     # SDP objective function
-    obj = cvxpy.Minimize(cvxpy.norm(arg, p=2))
+    obj = cvxpy.Minimize(cvxpy.norm(arg, p=1))
 
     # Solve SDP
     prob = cvxpy.Problem(obj, cons)
-    iters = 5000
-    max_iters = kwargs.get('max_iters', 20000)
+    # Settings for the fitting
+    max_iters = 50000
+    iters = 1000
+    atol = 1e-8
+
     # Set default solver if none is specified
     if 'solver' not in kwargs:
         if 'CVXOPT' in cvxpy.installed_solvers():
@@ -202,8 +178,7 @@ def cvx_fit(data: np.array,
 
     problem_solved = False
     while not problem_solved:
-        kwargs['max_iters'] = iters
-        prob.solve(**kwargs)
+        prob.solve(max_iters=iters, eps=atol ,verbose=True)
         if prob.status in ["optimal_inaccurate", "optimal"]:
             problem_solved = True
         elif prob.status == "unbounded_inaccurate":
@@ -219,8 +194,8 @@ def cvx_fit(data: np.array,
                 "happen".format(prob.status))
         else:
             raise RuntimeError("CVX fit failed, reason unknown")
-    rho_fit = rho_r.value + 1j * rho_i.value
-    return rho_fit
+    # rho_fit = rho_r.value + 1j * rho_i.value
+    return rho.value
 
 
 ###########################################################################
