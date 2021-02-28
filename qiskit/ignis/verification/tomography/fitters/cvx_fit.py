@@ -133,6 +133,7 @@ def cvx_fit(data: np.array,
 
     # Specifying the we want psd
 
+    psd = False # As we do not want psd in general
     if psd is True:
         cons.append(rho >> 0)
 
@@ -178,7 +179,7 @@ def cvx_fit(data: np.array,
 
     problem_solved = False
     while not problem_solved:
-        prob.solve(max_iters=iters, eps=atol ,verbose=True)
+        prob.solve(max_iters=iters, abstol=atol, verbose=True)
         if prob.status in ["optimal_inaccurate", "optimal"]:
             problem_solved = True
         elif prob.status == "unbounded_inaccurate":
