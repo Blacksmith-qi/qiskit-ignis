@@ -133,7 +133,7 @@ def cvx_fit(data: np.array,
 
     # Specifying the we want psd
 
-    psd = False # As we do not want psd in general
+    #psd = False # As we do not want psd in general
     if psd is True:
         cons.append(rho >> 0)
 
@@ -161,7 +161,7 @@ def cvx_fit(data: np.array,
     arg = basis_matrix @ cvxpy.vec(rho) - np.array(data)
 
     # SDP objective function
-    obj = cvxpy.Minimize(cvxpy.norm(arg, p=1))
+    obj = cvxpy.Minimize(cvxpy.norm(arg) + cvxpy.norm(rho, 'nuc'))
 
     # Solve SDP
     prob = cvxpy.Problem(obj, cons)
@@ -179,7 +179,7 @@ def cvx_fit(data: np.array,
 
     problem_solved = False
     while not problem_solved:
-        prob.solve(max_iters=iters, abstol=atol, verbose=True)
+        prob.solve(max_iters=iters, verbose=False)
         if prob.status in ["optimal_inaccurate", "optimal"]:
             problem_solved = True
         elif prob.status == "unbounded_inaccurate":
