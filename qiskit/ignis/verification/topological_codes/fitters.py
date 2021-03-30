@@ -21,13 +21,13 @@ expressed as solving a graph-theoretic problem.
 
 import copy
 import warnings
-import networkx as nx
+import retworkx as rx
 import numpy as np
 
 from qiskit import QuantumCircuit, execute
 
 try:
-    from qiskit import Aer
+    from qiskit.providers.aer import Aer
     HAS_AER = True
 except ImportError:
     from qiskit import BasicAer
@@ -45,7 +45,7 @@ class GraphDecoder():
         Args:
             code (RepitionCode): The QEC Code object for which this decoder
                 will be used.
-            S (networkx.Graph): Graph describing connectivity between syndrome
+            S (retworkx.PyGraph): Graph describing connectivity between syndrome
                 elements. Will be generated automatically if not supplied.
 
         Additional information:
@@ -97,7 +97,7 @@ class GraphDecoder():
         elements that can be created by the same error.
         """
 
-        S = nx.Graph()
+        S = rx.PyGraph(multigraph=False)
 
         qc = self.code.circuit['0']
 
@@ -129,11 +129,11 @@ class GraphDecoder():
 
         job = execute(list(error_circuit.values()), simulator)
 
+        node_map = {}
         for j in range(depth):
             qubits = qc.data[j][1]
             for qubit in qubits:
                 for error in ['x', 'y', 'z']:
-
                     raw_results = {}
                     raw_results['0'] = job.result().get_counts(
                         str((j, qubit, error)))
@@ -148,15 +148,74 @@ class GraphDecoder():
                             " at depth " + str(j) + " creates " + \
                             str(len(nodes)) + \
                             " nodes in syndrome graph, instead of 2."
-
                         for node in nodes:
-                            S.add_node(node)
+                            if node not in node_map:
+                                node_map[node] = S.add_node(node)
                         for source in nodes:
                             for target in nodes:
-                                if source != target:
-                                    S.add_edge(source, target, distance=1)
+                                if target != source:
+                                    S.add_edge(node_map[source],
+                                               node_map[target], 1)
 
         return S
+
+    def get_error_probs(self, results):
+        """
+        Generate probabilities of single error events from result counts.
+
+        Args:
+            results (dict): A results dictionary, as produced by the
+            `process_results` method of the code.
+
+        Returns:
+            dict: Keys are the edges for specific error
+            events, and values are the calculated probabilities
+
+        Additional information:
+            Uses `results` to estimate the probability of the errors that
+            create the pairs of nodes specified by the edge.
+            Calculation done using the method of Spitz, et al.
+            https://doi.org/10.1002/qute.201800012
+        """
+
+        results = results['0']
+        shots = sum(results.values())
+
+        error_probs = {}
+        for edge in self.S.edge_list():
+
+            # initialize averages
+            av_vv = 0  # v_ij
+            av_v = [0, 0]  # [v_,v_j]
+            av_xor = 0  # v_{i xor j}
+
+            for string in results:
+
+                # list of i for which v_i=1
+                error_nodes = self._string2nodes(string)
+
+                # get [v_i,v_j] for edge (i,j)
+                v = [int(self.S[edge[k]] in error_nodes) for k in range(2)]
+
+                # update averages
+                av_vv += v[0]*v[1]*results[string]
+                for k in range(2):
+                    av_v[k] += v[k]*results[string]
+                av_xor += (v[0] != v[1])*results[string]
+
+            # normalize
+            av_vv /= shots
+            av_v[0] /= shots
+            av_v[1] /= shots
+            av_xor /= shots
+
+            if (1 - 2*av_xor) != 0:
+                x = (av_vv - av_v[0]*av_v[1])/(1 - 2*av_xor)
+            else:
+                x = np.nan
+            error_probs[self.S[edge[0]], self.S[edge[1]]] = max(0, 0.5 - np.sqrt(0.25-x))
+
+        return error_probs
 
     def weight_syndrome_graph(self, results):
         """Generate weighted syndrome graph from result counts.
@@ -171,33 +230,17 @@ class GraphDecoder():
             replaced with the corresponding -log(p/(1-p).
         """
 
-        results = results['0']
+        error_probs = self.get_error_probs(results)
 
-        count = {element: {edge: 0 for edge in self.S.edges}
-                 for element in ['00', '01', '10', '11']}
-
-        for string in results:
-
-            nodes = self._string2nodes(string)
-
-            for edge in self.S.edges:
-                element = ''
-                for j in range(2):
-                    if edge[j] in nodes:
-                        element += '1'
-                    else:
-                        element += '0'
-                count[element][edge] += results[string]
-
-        for edge in self.S.edges:
-            edge_data = self.S.get_edge_data(edge[0], edge[1])
-            ratios = []
-            for elements in [('00', '11'), ('11', '00'),
-                             ('01', '10'), ('10', '01')]:
-                if count[elements[1]][edge] > 0:
-                    ratio = count[elements[0]][edge]/count[elements[1]][edge]
-                    ratios.append(ratio)
-            edge_data['distance'] = -np.log(min(ratios))
+        for edge in self.S.edge_list():
+            p = error_probs[self.S[edge[0]], self.S[edge[1]]]
+            if p == 0:
+                w = np.inf
+            elif 1-p == 1:
+                w = -np.inf
+            else:
+                w = -np.log(p/(1-p))
+            self.S.update_edge(edge[0], edge[1], w)
 
     def make_error_graph(self, string, subgraphs=None):
         """
@@ -219,31 +262,39 @@ class GraphDecoder():
         set_subgraphs = [
             subgraph for subs4type in subgraphs for subgraph in subs4type]
 
-        E = {subgraph: nx.Graph() for subgraph in set_subgraphs}
+        E = {}
+        node_sets = {}
+        for subgraph in set_subgraphs:
+            E[subgraph] = rx.PyGraph(multigraph=False)
+            node_sets[subgraph] = set()
 
+        E = {subgraph: rx.PyGraph(multigraph=False) for subgraph in set_subgraphs}
         separated_string = self._separate_string(string)
-
         for syndrome_type, _ in enumerate(separated_string):
             for syndrome_round in range(len(separated_string[syndrome_type])):
                 elements = separated_string[syndrome_type][syndrome_round]
                 for elem_num, element in enumerate(elements):
                     if element == '1' or syndrome_type == 0:
                         for subgraph in subgraphs[syndrome_type]:
-                            E[subgraph].add_node(
-                                (syndrome_type,
-                                 syndrome_round,
-                                 elem_num))
+                            node_data = (syndrome_type, syndrome_round, elem_num)
+                            if node_data not in node_sets[subgraph]:
+                                E[subgraph].add_node(node_data)
+                                node_sets[subgraph].add(node_data)
 
         # for each pair of nodes in error create an edge and weight with the
         # distance
-        for subgraph in set_subgraphs:
-            for source in E[subgraph]:
-                for target in E[subgraph]:
-                    if target != (source):
-                        distance = int(nx.shortest_path_length(
-                            self.S, source, target, weight='distance'))
-                        E[subgraph].add_edge(source, target, weight=-distance)
+        distance_matrix = rx.graph_floyd_warshall_numpy(self.S, weight_fn=float)
+        s_node_map = {self.S[index]: index for index in self.S.node_indexes()}
 
+        for subgraph in set_subgraphs:
+            for source_index in E[subgraph].node_indexes():
+                for target_index in E[subgraph].node_indexes():
+                    source = E[subgraph][source_index]
+                    target = E[subgraph][target_index]
+                    if target != source:
+                        distance = int(distance_matrix[s_node_map[source]][s_node_map[target]])
+                        E[subgraph].add_edge(source_index, target_index,
+                                             -distance)
         return E
 
     def matching(self, string):
@@ -265,11 +316,13 @@ class GraphDecoder():
 
         # set up graph that is like E, but each syndrome node is connected to a
         # separate copy of the nearest logical node
-        E_matching = nx.Graph()
+        E_matching = rx.PyGraph(multigraph=False)
         syndrome_nodes = []
         logical_nodes = []
         logical_neighbours = []
-        for node in E:
+        node_map = {}
+        for node in E.nodes():
+            node_map[node] = E_matching.add_node(node)
             if node[0] == 0:
                 logical_nodes.append(node)
             else:
@@ -278,25 +331,33 @@ class GraphDecoder():
             for target in syndrome_nodes:
                 if target != (source):
                     E_matching.add_edge(
-                        source, target, weight=E[source][target]['weight'])
+                        node_map[source],
+                        node_map[target],
+                        E.get_edge_data(node_map[source],
+                                        node_map[target]))
 
             potential_logical = {}
             for target in logical_nodes:
-                potential_logical[target] = E[source][target]['weight']
+                potential_logical[target] = E.get_edge_data(node_map[source],
+                                                            node_map[target])
             nearest_logical = max(potential_logical, key=potential_logical.get)
+            nl_target = nearest_logical + source
+            if nl_target not in node_map:
+                node_map[nl_target] = E_matching.add_node(nl_target)
             E_matching.add_edge(
-                source,
-                nearest_logical + source,
-                weight=potential_logical[nearest_logical])
-            logical_neighbours.append(nearest_logical + source)
+                node_map[source],
+                node_map[nl_target],
+                potential_logical[nearest_logical])
+            logical_neighbours.append(nl_target)
         for source in logical_neighbours:
             for target in logical_neighbours:
                 if target != (source):
-                    E_matching.add_edge(source, target, weight=0)
-
+                    E_matching.add_edge(node_map[source], node_map[target], 0)
         # do the matching on this
-        matches = nx.max_weight_matching(E_matching, maxcardinality=True)
-
+        matches = {
+            (E_matching[x[0]],
+             E_matching[x[1]]) for x in rx.max_weight_matching(
+                 E_matching, max_cardinality=True, weight_fn=lambda x: x)}
         # use it to construct and return a corrected logical string
         logicals = self._separate_string(string)[0]
         for (source, target) in matches:

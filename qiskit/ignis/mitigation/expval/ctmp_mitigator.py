@@ -112,13 +112,12 @@ class CTMPExpvalMeasMitigator(BaseExpvalMeasMitigator):
             which physical qubits these bit-values correspond to as
             ``circuit.measure(qubits, clbits)``.
         """
-        if qubits is None:
-            qubits = list(range(self._num_qubits))
-
         # Convert counts to probs
         probs, shots = counts_probability_vector(
-            counts, clbits=clbits, qubits=qubits,
-            num_qubits=len(qubits), return_shots=True)
+            counts, clbits=clbits, qubits=qubits, return_shots=True)
+        num_qubits = int(np.log2(probs.shape[0]))
+        if qubits is None:
+            qubits = list(range(num_qubits))
 
         # Ensure diagonal is a numpy vector so we can use fancy indexing
         if diagonal is None:
@@ -131,8 +130,8 @@ class CTMPExpvalMeasMitigator(BaseExpvalMeasMitigator):
         gamma = self.noise_strength(qubits)
         bmat = self._sampling_matrix(qubits)
         values = bmat.data
-        indices = np.asarray(bmat.indices, dtype=np.int)
-        indptrs = np.asarray(bmat.indptr, dtype=np.int)
+        indices = np.asarray(bmat.indices, dtype=int)
+        indptrs = np.asarray(bmat.indptr, dtype=int)
 
         # Set a minimum number of CTMP samples
         shots = sum(counts.values())
@@ -184,7 +183,7 @@ class CTMPExpvalMeasMitigator(BaseExpvalMeasMitigator):
         if qubits not in self._generator_mats:
             # Construct G from subset generators
             qubits_set = set(qubits)
-            g_mat = sps.coo_matrix(2 * (2**len(qubits),), dtype=np.float)
+            g_mat = sps.coo_matrix(2 * (2**len(qubits),), dtype=float)
             for gen, rate in zip(self._generators, self._rates):
                 if qubits_set.issuperset(gen[2]):
                     # Keep generator
@@ -301,7 +300,7 @@ class CTMPExpvalMeasMitigator(BaseExpvalMeasMitigator):
 
         # Apply CTMP sampling
         r_vals = rng.random(size=alphas.sum())
-        y_vals = np.zeros(x_vals.size, dtype=np.int)
+        y_vals = np.zeros(x_vals.size, dtype=int)
         _markov_chain_compiled(y_vals, x_vals, r_vals, alphas, csc_data, csc_indices,
                                csc_indptrs)
 
